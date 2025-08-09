@@ -1,26 +1,39 @@
-// 說明：Express 後端，提供靜態前端 + 兩個 API：/api/whisper、/api/n8n
-// - /api/whisper：接收前端上傳的音訊檔案，轉送 OpenAI Whisper 做語音轉文字
-// - /api/n8n：將文字轉發至 n8n Webhook，回傳其結果
-// 需求：Node 18+ (使用原生 fetch)、dotenv、express、multer、form-data
+// 說明：Express 後端，提供靜態前端 + API：/api/whisper /api/n8n /api/tts
+// 需求：Node 18+ (原生 fetch)、dotenv、express、multer、form-data、cors
 
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const multer = require('multer');       // 處理 multipart/form-data
-const FormData = require('form-data');  // 用於呼叫 OpenAI Whisper API
+const multer = require('multer');        // 處理 multipart/form-data
+const FormData = require('form-data');   // 呼叫 OpenAI Whisper API
+const cors = require('cors');
 
 const app = express();
-const upload = multer(); // 使用記憶體儲存；上傳檔案會放在 req.file.buffer
 
-// 解析 JSON（給 /api/n8n 使用）
+// ✅ CORS：允許你的 GitHub Pages 來源呼叫（只需網域，不要帶路徑）
+app.use(cors({
+  origin: ['https://justin-321-hub.github.io'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400
+}));
+// 預檢請求
+app.options('*', cors());
+
+// JSON 解析（給 /api/n8n、/api/tts 使用）
 app.use(express.json({ limit: '1mb' }));
 
-// 提供靜態檔案
+// （可留可不留）提供靜態檔案
 app.use(express.static(path.join(__dirname, 'public')));
+
+// 健康檢查（Render/Ping 用）
+app.get('/health', (_req, res) => res.status(200).send('ok'));
+
+// Multer：限制錄音檔大小，避免塞爆記憶體（20MB 可自行調整）
+const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } });
 
 // --- Whisper 代理：接收前端錄音 Blob，轉送到 OpenAI Whisper ---
 app.post('/api/whisper', upload.single('file'), async (req, res) => {
-  // 檢查設定
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: '缺少 OPENAI_API_KEY' });
   }
@@ -29,22 +42,17 @@ app.post('/api/whisper', upload.single('file'), async (req, res) => {
   }
 
   try {
-    // 用 form-data 打包送至 OpenAI /v1/audio/transcriptions
     const form = new FormData();
     form.append('file', req.file.buffer, {
       filename: 'audio.webm',
       contentType: req.file.mimetype || 'audio/webm'
     });
-    form.append('model', 'whisper-1');  // Whisper 模型
-    // form.append('language', 'zh');   // 可選：指定語言可提升準確度
-    // form.append('response_format', 'json'); // 預設即為 json
+    form.append('model', 'whisper-1');
+    // form.append('language', 'zh'); // 可選
 
     const r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        ...form.getHeaders()
-      },
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, ...form.getHeaders() },
       body: form
     });
 
@@ -52,8 +60,7 @@ app.post('/api/whisper', upload.single('file'), async (req, res) => {
       const errText = await r.text();
       return res.status(r.status).json({ error: errText });
     }
-
-    const data = await r.json(); // 預期 { text: "..." }
+    const data = await r.json(); // { text: "..." }
     return res.status(200).json(data);
   } catch (err) {
     return res.status(500).json({ error: err?.message || 'Whisper API error' });
@@ -77,7 +84,6 @@ app.post('/api/n8n', async (req, res) => {
       const errText = await r.text();
       return res.status(r.status).json({ error: errText || 'n8n error' });
     }
-
     if (ct.includes('application/json')) {
       const data = await r.json();
       return res.status(200).json(data);
@@ -97,11 +103,9 @@ app.post('/api/tts', async (req, res) => {
   }
 
   try {
-    // 解析前端送來的 JSON：{ text, voice?, format? }
     const { text, voice = 'alloy', format = 'mp3' } = req.body || {};
     if (!text || !text.trim()) return res.status(400).json({ error: '缺少 text 內容' });
 
-    // 呼叫 OpenAI TTS 端點
     const r = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
@@ -111,8 +115,8 @@ app.post('/api/tts', async (req, res) => {
       body: JSON.stringify({
         model: 'gpt-4o-mini-tts',
         input: text,
-        voice,   // 可選：alloy/onyx/nova/sage/shimmer…（可換）
-        format   // 可選：mp3/opus/aac/flac/wav/pcm
+        voice,   // alloy/onyx/nova/sage/shimmer…
+        format   // mp3/opus/aac/flac/wav/pcm
       })
     });
 
@@ -126,7 +130,7 @@ app.post('/api/tts', async (req, res) => {
 
     const contentTypes = {
       mp3: 'audio/mpeg',
-      opus: 'audio/ogg',
+      opus: 'audio/ogg; codecs=opus', // 更精確
       aac: 'audio/aac',
       flac: 'audio/flac',
       wav: 'audio/wav',
@@ -134,12 +138,13 @@ app.post('/api/tts', async (req, res) => {
     };
     res.setHeader('Content-Type', contentTypes[format] || 'audio/mpeg');
     res.setHeader('Content-Disposition', `inline; filename="speech.${format}"`);
+    // 可選：避免快取
+    // res.setHeader('Cache-Control', 'no-store');
     return res.status(200).end(buf);
   } catch (err) {
     return res.status(500).json({ error: err?.message || 'TTS proxy error' });
   }
 });
-
 
 // 啟動服務
 const PORT = process.env.PORT || 3000;
