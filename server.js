@@ -15,7 +15,8 @@ const app = express();
 app.use(cors({
   origin: ['https://justin-321-hub.github.io'],
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  // ★ 變更：允許自訂標頭 X-Client-Id
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Id'],
   maxAge: 86400
 }));
 app.options('*', cors());
@@ -34,7 +35,7 @@ const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } });
 
 /* =========================
    Whisper 代理：前端錄音 → OpenAI STT
-   - 改用 Node 原生 FormData/Blob（避免第三方 form-data 相容性問題）
+   - 使用 Node 原生 FormData/Blob
    ========================= */
 app.post('/api/whisper', upload.single('file'), async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
@@ -49,18 +50,16 @@ app.post('/api/whisper', upload.single('file'), async (req, res) => {
     const form = new FormData();
     const blob = new Blob([req.file.buffer], { type: mime });
 
-    // 欄位名必須是 file；檔名可固定為 audio.webm（或依 mime 決定）
-    form.append('file', blob, 'audio.webm');
+    form.append('file', blob, 'audio.webm'); // 欄位名固定為 file
     form.append('model', 'whisper-1');
-    // form.append('language', 'zh'); // 可選：指定語言提升準確率
+    // form.append('language', 'zh'); // 可選
 
     const r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        // 不要自行帶 multipart boundary，讓 fetch 依 form 自動設定
       },
-      body: form
+      body: form // 讓 fetch 自動帶 boundary
     });
 
     if (!r.ok) {
@@ -84,35 +83,38 @@ app.post('/api/n8n', async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL' });
 
+  // ★ 變更：讀取 clientId（body 優先，其次 header），預設 anon
+  const cid = req.body?.clientId || req.headers['x-client-id'] || 'anon';
+
   try {
     const r = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         // 某些 WAF/Cloudflare 對沒有 UA 的請求會擋
-        'User-Agent': 'fourleaf-proxy/1.0'
+        'User-Agent': 'fourleaf-proxy/1.0',
+        // ★ 變更：把 clientId 也放到上游 header
+        'X-Client-Id': cid
       },
-      body: JSON.stringify(req.body || {})
+      // ★ 變更：把 clientId 合併進 body，避免前端漏傳
+      body: JSON.stringify({ ...(req.body || {}), clientId: cid })
     });
 
     const ct = r.headers.get('content-type') || '';
+    const raw = await r.text(); // 先取字串，避免空 body 解析失敗
 
     if (!r.ok) {
-      const errText = await r.text();
-      console.error('[n8n] upstream error:', r.status, errText);
-      return res.status(r.status).json({
-        error: 'n8n error',
-        status: r.status,
-        body: errText
-      });
+      console.error('[n8n] upstream error:', r.status, raw);
+      return res
+        .status(r.status)
+        .type(ct || 'application/json')
+        .send(raw || JSON.stringify({ error: 'n8n error' }));
     }
 
     if (ct.includes('application/json')) {
-      const data = await r.json();
-      return res.status(200).json(data);
+      return res.status(200).type('application/json').send(raw || '{}');
     } else {
-      const text = await r.text();
-      return res.status(200).json({ text });
+      return res.status(200).json({ text: raw });
     }
   } catch (err) {
     console.error('[n8n] fetch failed:', err?.name, err?.message, err?.cause?.code);
