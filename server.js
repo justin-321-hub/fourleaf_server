@@ -13,7 +13,7 @@ const app = express();
    CORS（允許 GitHub Pages 來源）
    ========================= */
 app.use(cors({
-  origin: ['https://justin-321-hub.github.io'],
+  origin: ['https://fourleaf.smartchat.live/','https://justin-321-hub.github.io'],
   methods: ['GET', 'POST', 'OPTIONS'],
   // ★ 變更：允許自訂標頭 X-Client-Id
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Id'],
@@ -184,4 +184,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running: http://localhost:${PORT}`);
 });
+
 
