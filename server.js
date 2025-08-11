@@ -1,4 +1,4 @@
-// 說明：Express 後端，提供靜態前端 + API：/api/whisper /api/n8n /api/tts
+// 說明：Express 後端，提供靜態前端 + API：/api/whisper /api/chat /api/tts
 // 需求：Node 18+ (原生 fetch)、dotenv、express、multer、cors
 
 require('dotenv').config();
@@ -77,9 +77,9 @@ app.post('/api/whisper', upload.single('file'), async (req, res) => {
 });
 
 /* =========================
-   n8n 代理：文字 → 你的 n8n Webhook
+   chat 代理：文字 → 你的 n8n Webhook
    ========================= */
-app.post('/api/n8n', async (req, res) => {
+app.post('/api/chat', async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL' });
 
@@ -184,3 +184,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running: http://localhost:${PORT}`);
 });
+
